@@ -1,0 +1,70 @@
+DROP TABLE IF EXISTS natebox.f_nathan_inventory_transfers;
+COMMIT;
+CREATE TABLE natebox.f_nathan_inventory_transfers
+AS
+	SELECT
+		  COALESCE(c.root, b.root) :: text                                         AS root
+		, COALESCE(c.source, b.source) :: bigint                                   AS source
+		, COALESCE(c.created_date,
+				   b.transfer_date) :: timestamp(0) without time zone              AS transfer_date
+		, a.transfer_id :: bigint                                                  AS transfer_id
+		, COALESCE(inb.org_id :: text,
+				   CONCAT('1111111', a.inbound_license :: text)) :: bigint         AS inbound_org_id
+		, COALESCE(outb.org_id :: text,
+				   CONCAT('1111111', a.outbound_license :: text)) :: bigint        AS outbound_org_id
+		, a.inventory_id :: bigint                                                 AS inventory_id
+		, COALESCE(b.strain, c.strain) :: text                                     AS strain
+		, COALESCE(b.inventory_type_id,
+				   c.inventory_type_id) :: integer                                 AS inventory_type_id
+		, ROUND(ROUND(COALESCE(b.size, c.size) * 20, 0) / 20, 2) :: numeric(28, 2) AS size
+		, a.is_refund :: boolean                                                   AS is_refund
+		, ROUND(COALESCE(b.revenue, c.revenue), 2) :: numeric(28, 2)               AS revenue
+		, ROUND(COALESCE(b.quantity, c.quantity), 2) :: numeric(28, 2)             AS quantity
+	FROM
+		natebox.etl_nathan_inventory_transfers_base a
+		LEFT JOIN
+		natebox.stg_nathan_inventory_transfer b
+			ON b.transfer_id = a.transfer_id
+			   AND b.inventory_id = a.inventory_id
+		LEFT JOIN
+		natebox.biotrackthc_nathan_inventorytransfers c
+			ON c.transfer_id = a.transfer_id
+			   AND c.inventory_id = a.inventory_id
+		LEFT JOIN
+		natebox.d_nathan_organizations inb
+			ON inb.license_number = a.inbound_license
+		LEFT JOIN
+		natebox.d_nathan_organizations outb
+			ON outb.license_number = a.outbound_license
+	WHERE
+		outb.name <> inb.name
+		AND outb.ubi <> inb.ubi
+		AND outb.license_number <> inb.license_number
+	GROUP BY
+		COALESCE(c.root, b.root) :: text
+		, COALESCE(c.source, b.source) :: bigint
+		, COALESCE(c.created_date, b.transfer_date) :: timestamp(0) without time zone
+		, a.transfer_id :: bigint
+		, COALESCE(inb.org_id :: text, CONCAT('1111111', a.inbound_license :: text)) :: bigint
+		, COALESCE(outb.org_id :: text, CONCAT('1111111', a.outbound_license :: text)) :: bigint
+		, a.inventory_id :: bigint
+		, COALESCE(b.strain, c.strain) :: text
+		, COALESCE(b.inventory_type_id, c.inventory_type_id) :: integer
+		, ROUND(ROUND(COALESCE(b.size, c.size) * 20, 0) / 20, 2) :: numeric(28, 2)
+		, a.is_refund :: boolean
+		, ROUND(COALESCE(b.revenue, c.revenue), 2) :: numeric(28, 2)
+		, ROUND(COALESCE(b.quantity, c.quantity), 2) :: numeric(28, 2);
+COMMIT;
+CREATE INDEX idx_fnit_inbound_org_id
+	ON natebox.f_nathan_inventory_transfers (inbound_org_id);
+CREATE INDEX idx_fnit_outbound_org_id
+	ON natebox.f_nathan_inventory_transfers (outbound_org_id);
+CREATE INDEX idx_fnit_inventory_id
+	ON natebox.f_nathan_inventory_transfers (inventory_id);
+CREATE INDEX idx_fnit_inventory_type_id
+	ON natebox.f_nathan_inventory_transfers (inventory_type_id);
+CREATE INDEX idx_fnit_source
+	ON natebox.f_nathan_inventory_transfers (source);
+CREATE INDEX idx_fnit_transfer_id
+	ON natebox.f_nathan_inventory_transfers (transfer_id);
+COMMIT;

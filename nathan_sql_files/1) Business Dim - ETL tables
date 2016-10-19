@@ -1,0 +1,319 @@
+DROP TABLE IF EXISTS natebox.etl_nathan_licenses;
+COMMIT;
+CREATE TABLE natebox.etl_nathan_licenses
+AS
+	SELECT
+		  l1.license_number :: integer                                                     AS license_number
+		, MAX(l1.ubi) :: bigint                                                            AS ubi
+		, COALESCE(MIN(l1.fifteenday_end) :: timestamp(0) - INTERVAL '15 DAYS',
+				   CURRENT_TIMESTAMP - INTERVAL '1 DAY') :: timestamp(0) without time zone AS open_date
+		, MAX(l1.location_type) :: integer                                                 AS location_type
+		, MAX(l1.producer) :: integer                                                      AS producer
+		, MAX(l1.processor) :: integer                                                     AS processor
+		, MAX(l1.retailer) :: integer                                                      AS retailer
+		, COALESCE(MAX(l1.medical :: integer), 0) :: integer                               AS medical
+		, COALESCE(MAX(CASE WHEN l1.deleted = 1
+		THEN l1.delete_time END) :: timestamp(0),
+				   CURRENT_TIMESTAMP + INTERVAL '1 DAY') :: timestamp(0) without time zone AS close_date
+	FROM (
+			 SELECT
+				   bl1.licensenum :: integer                    AS license_number
+				 , bl1.locubi :: bigint                         AS ubi
+				 , (bl1.fifteenday_end :: text) :: timestamp(0) AS fifteenday_end
+				 , bl1.locationtype :: integer                  AS location_type
+				 , COALESCE(bl1.producer :: integer, 0)         AS producer
+				 , COALESCE(bl1.processor :: integer, 0)        AS processor
+				 , COALESCE(bl1.retail :: integer, 0)           AS retailer
+				 , 0                                            AS medical
+				 , bl1.deleted :: integer                       AS deleted
+				 , (bl1.delete_time :: text) :: timestamp(0)    AS delete_time
+			 FROM wa_staging.biotrackthc_locations bl1
+		
+			 UNION ALL
+		
+			 SELECT
+				   sv1.license_number :: integer                AS license_number
+				 , sv1.ubi :: bigint                            AS ubi
+				 , (sv1.fifteenday_end :: text) :: timestamp(0) AS fifteenday_end
+				 , sv1.location_type :: integer                 AS location_type
+				 , COALESCE(sv1.producer :: integer, 0)         AS producer
+				 , COALESCE(sv1.processor :: integer, 0)        AS processor
+				 , COALESCE(sv1.retail :: integer, 0)           AS retailer
+				 , COALESCE(sv1.medical :: integer, 0)          AS medical
+				 , sv1.deleted :: integer                       AS deleted
+				 , (sv1.delete_time :: text) :: timestamp(0)    AS delete_time
+			 FROM stg_lemonhaze.stg_vendor sv1
+		 ) l1
+	GROUP BY
+		l1.license_number
+	ORDER BY
+		l1.license_number :: integer ASC;
+COMMIT;
+ALTER TABLE natebox.etl_nathan_licenses
+	ADD CONSTRAINT etl_nathan_licenses_pk_licenses
+PRIMARY KEY (license_number);
+CREATE INDEX idx_enl_ubi
+	ON natebox.etl_nathan_licenses (ubi);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.etl_nathan_location_state;
+COMMIT;
+CREATE TABLE natebox.etl_nathan_location_state
+AS
+	SELECT DISTINCT
+		  'STATE' :: text                         AS root
+		, 111111111 :: bigint                     AS source
+		, l2.name :: text                         AS name
+		, l2.address1                             AS address1
+		, l2.address2 :: text                     AS address2
+		, l2.city :: text                         AS city
+		, l2.state :: text                        AS state
+		, SUBSTR(l2.zip :: text, 1, 5) :: integer AS zip
+		, l2.licensenum :: integer                AS license_number
+		, l2.loclatitude :: numeric(28, 10)       AS latitude
+		, l2.loclongitude :: numeric(28, 10)      AS longitude
+		, l2.locubi :: bigint                     AS ubi
+	FROM wa_staging.biotrackthc_locations l2;
+COMMIT;
+CREATE INDEX idx_enls_ubi
+	ON natebox.etl_nathan_location_state (ubi);
+CREATE INDEX idx_enls_source
+	ON natebox.etl_nathan_location_state (source);
+CREATE INDEX idx_enls_license_number
+	ON natebox.etl_nathan_location_state (license_number);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.etl_nathan_location_api;
+COMMIT;
+CREATE TABLE natebox.etl_nathan_location_api
+AS
+	SELECT DISTINCT
+		  'BioTrackAPI' :: text                     AS root
+		, l3.source :: bigint                       AS source
+		, l3.name :: text                           AS name
+		, l3.address1 :: text                       AS address1
+		, l3.address2 :: text                       AS address2
+		, l3.city :: text                           AS city
+		, l3.state :: text                          AS state
+		, SUBSTR(l3.zip :: text, 1, 5) :: integer   AS zip
+		, l3.license_number :: integer              AS license_number
+		, (l3.latitude :: text) :: numeric(28, 10)  AS latitude
+		, (l3.longitude :: text) :: numeric(28, 10) AS longitude
+		, l3.ubi :: bigint                          AS ubi
+	FROM
+		stg_lemonhaze.stg_vendor l3;
+COMMIT;
+CREATE INDEX idx_enla_ubi
+	ON natebox.etl_nathan_location_api (ubi);
+CREATE INDEX idx_enla_source
+	ON natebox.etl_nathan_location_api (source);
+CREATE INDEX idx_enla_license_number
+	ON natebox.etl_nathan_location_api (license_number);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.etl_nathan_location_full;
+COMMIT;
+CREATE TABLE natebox.etl_nathan_location_full
+AS
+	SELECT
+		  COALESCE(b.root, a.root) :: text                      AS root
+		, COALESCE(b.source, a.source) :: bigint                AS source
+		, l.license_number :: integer                           AS license_number
+		, l.ubi :: bigint                                       AS ubi
+		, UPPER(COALESCE(a.name, b.name)) :: text               AS name
+		, UPPER(COALESCE(a.address1, b.address1)) :: text       AS address1
+		, UPPER(COALESCE(a.address2, b.address2)) :: text       AS address2
+		, COALESCE(a.zip, b.zip) :: integer                     AS zip
+		, UPPER(COALESCE(a.city, b.city)) :: text               AS city
+		, COALESCE(a.longitude, b.longitude) :: numeric(28, 10) AS longitude
+		, COALESCE(a.latitude, b.latitude) :: numeric(28, 10)   AS latitude
+		, CASE WHEN l.producer = 1 AND l.processor = 0
+		THEN 'GROWER'
+		  WHEN l.producer = 0 AND l.processor = 1
+			  THEN 'PROCESSOR'
+		  WHEN l.producer = 1 AND l.processor = 1
+			  THEN 'GROWER/PROCESSOR'
+		  WHEN l.retailer = 1
+			  THEN 'RETAILER'
+		  WHEN l.license_number < 50
+			  THEN 'LAB'
+		  ELSE 'verify' END :: text                             AS role
+		, l.location_type :: integer                            AS location_type
+		, COALESCE(l.medical, 0) :: boolean                     AS medical
+		, l.open_date :: timestamp(0)                           AS open_date
+		, l.close_date :: timestamp(0)                          AS close_date
+	FROM
+		natebox.etl_nathan_licenses l
+		LEFT OUTER JOIN natebox.etl_nathan_location_api a
+			ON l.license_number = a.license_number
+			   AND l.ubi = a.ubi
+		LEFT OUTER JOIN natebox.etl_nathan_location_state b
+			ON l.license_number = b.license_number
+			   AND l.ubi = b.ubi
+	GROUP BY
+		COALESCE(b.root, a.root) :: text
+		, COALESCE(b.source, a.source) :: bigint
+		, l.license_number :: integer
+		, l.ubi :: bigint
+		, UPPER(COALESCE(a.name, b.name)) :: text
+		, UPPER(COALESCE(a.address1, b.address1)) :: text
+		, UPPER(COALESCE(a.address2, b.address2)) :: text
+		, COALESCE(a.zip, b.zip) :: integer
+		, UPPER(COALESCE(a.city, b.city)) :: text
+		, COALESCE(a.longitude, b.longitude) :: numeric(28, 10)
+		, COALESCE(a.latitude, b.latitude) :: numeric(28, 10)
+		, CASE WHEN l.producer = 1 AND l.processor = 0
+		THEN 'GROWER'
+		  WHEN l.producer = 0 AND l.processor = 1
+			  THEN 'PROCESSOR'
+		  WHEN l.producer = 1 AND l.processor = 1
+			  THEN 'GROWER/PROCESSOR'
+		  WHEN l.retailer = 1
+			  THEN 'RETAILER'
+		  WHEN l.license_number < 50
+			  THEN 'LAB'
+		  ELSE 'verify' END :: text
+		, l.location_type :: integer
+		, COALESCE(l.medical, 0) :: boolean
+		, l.open_date :: timestamp(0)
+		, l.close_date :: timestamp(0);
+COMMIT;
+CREATE INDEX idx_enlf_ubi
+	ON natebox.etl_nathan_location_full (ubi);
+CREATE INDEX idx_enlf_source
+	ON natebox.etl_nathan_location_full (source);
+CREATE INDEX idx_enlf_license_number
+	ON natebox.etl_nathan_location_full (license_number);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.etl_nathan_businesses;
+COMMIT;
+CREATE TABLE natebox.etl_nathan_businesses
+AS
+	SELECT
+		  aa.root :: text                                         AS root
+		, aa.source :: bigint                                     AS source
+		, aa.license_number :: integer                            AS license_number
+		, aa.ubi :: bigint                                        AS ubi
+		, aa.name :: text                                         AS name
+		, aa.address1 :: text                                     AS address1
+		, CASE WHEN aa.address2 = 'null' OR aa.address2 = ''
+		THEN NULL
+		  ELSE aa.address2 END :: text                            AS address2
+		, CASE WHEN aa.zip = 98590
+		THEN CASE WHEN aa.city = 'MALONE'
+			THEN 98559
+			 ELSE aa.zip END
+		  WHEN aa.zip = 98665
+			  THEN
+				  CASE WHEN aa.city = 'TONASKET'
+					  THEN 98855
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98501
+			  THEN
+				  CASE WHEN aa.city = 'WENATCHEE'
+					  THEN 98801
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98344
+			  THEN
+				  CASE WHEN aa.city = 'OTHELLO'
+					  THEN 99344
+				  ELSE aa.zip END
+		  WHEN aa.zip = 99202
+			  THEN
+				  CASE WHEN aa.city = 'MEDICAL LAKE'
+					  THEN 99022
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98112
+			  THEN
+				  CASE WHEN aa.city = 'PULLMAN'
+					  THEN 99163
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98205
+			  THEN
+				  CASE WHEN aa.city = 'LAKE STEVENS'
+					  THEN 98258
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98614
+			  THEN
+				  CASE WHEN aa.city = 'ILWACO'
+					  THEN 98624
+				  ELSE aa.zip END
+		  WHEN aa.zip = 99031
+			  THEN
+				  CASE WHEN aa.city = 'FORD'
+					  THEN 99013
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98445
+			  THEN
+				  CASE WHEN aa.city = 'ELMA'
+					  THEN 98541
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98223
+			  THEN
+				  CASE WHEN aa.city = 'BURLINGTON'
+					  THEN 98233
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98001
+			  THEN
+				  CASE WHEN aa.city = 'AIRWAY HEIGHTS'
+					  THEN 99001
+				  ELSE aa.zip END
+		  WHEN aa.zip = 98829
+			  THEN 98828
+		  WHEN aa.zip = 98202
+			  THEN 99202
+		  WHEN aa.zip = 98341
+			  THEN 99341
+		  WHEN aa.zip = 98441
+			  THEN 98841
+		  WHEN aa.zip = 99404
+			  THEN 99004
+		  WHEN aa.zip = 99880
+			  THEN 98801
+		  WHEN aa.zip = 94140
+			  THEN 98233
+		  ELSE aa.zip
+		  END :: integer                                          AS zip
+		, CASE WHEN aa.city = 'BREMERTON'
+		THEN
+			CASE WHEN aa.zip = 98367
+				THEN 'PORT ORCHARD'
+			ELSE aa.city END
+		  WHEN aa.city = 'CRESTON'
+			  THEN
+				  CASE WHEN aa.zip = 99147
+					  THEN 'LINCOLN'
+				  ELSE aa.city END
+		  WHEN aa.city = 'SPOKANE'
+			  THEN
+				  CASE WHEN aa.zip = 99005
+					  THEN 'COLBERT'
+				  ELSE aa.city END
+		  WHEN aa.city = 'WENATCHEE'
+			  THEN
+				  CASE WHEN aa.zip = 98828
+					  THEN 'MALAGA'
+				  ELSE aa.city END
+		  ELSE aa.city END :: text                                AS city
+		, aa.longitude :: numeric(28, 10)                         AS longitude
+		, aa.latitude :: numeric(28, 10)                          AS latitude
+		, aa.role :: text                                         AS role
+		, aa.medical :: boolean                                   AS medical
+		, aa.location_type :: integer                             AS location_type
+		, CASE WHEN aa.role = 'LAB'
+		THEN
+			'2014-01-01 00:00:01' :: timestamp(0) without time zone
+		  ELSE aa.open_date :: timestamp(0) without time zone END AS open_date
+		, aa.close_date :: timestamp(0) without time zone         AS close_date
+	FROM natebox.etl_nathan_location_full aa
+	ORDER BY
+		aa.license_number :: integer ASC;
+COMMIT;
+CREATE INDEX idx_enb_ubi
+	ON natebox.etl_nathan_businesses (ubi);
+CREATE INDEX idx_enb_source
+	ON natebox.etl_nathan_businesses (source);
+CREATE INDEX idx_enb_license_number
+	ON natebox.etl_nathan_businesses (license_number);
+COMMIT;

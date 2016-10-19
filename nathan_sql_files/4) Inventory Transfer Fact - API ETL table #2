@@ -1,0 +1,54 @@
+DROP TABLE IF EXISTS natebox.stg_nathan_inventory_transfer;
+COMMIT;
+CREATE TABLE natebox.stg_nathan_inventory_transfer
+AS
+	SELECT
+		  'BioTrackAPI' :: text                                    AS root
+		, it.source :: bigint                                      AS source
+		, MAX(itb.transfer_date) :: timestamp(0) without time zone AS transfer_date
+		, it.transaction_id :: bigint                              AS transfer_id
+		, COALESCE(m.inbound_license_number :: integer,
+				   it.inbound_license :: integer)                  AS inbound_license
+		, COALESCE(m.outbound_license_number :: integer,
+				   it.outbound_license :: integer)                 AS outbound_license
+		, it.inventory_id :: bigint                                AS inventory_id
+		, it.strain :: text                                        AS strain
+		, it.inventory_type_id :: integer                          AS inventory_type_id
+		, MAX(si.size :: numeric(28, 10))                          AS size
+		, it.is_refund :: boolean                                  AS is_refund
+		, it.revenue :: numeric(28, 10)                            AS revenue
+		, it.quantity :: numeric(28, 10)                           AS quantity
+	FROM natebox.stg_nathan_inventory_transfer_holding it
+		LEFT JOIN stg_lemonhaze.stg_manifest_stop_data m
+			ON m.manifest_id :: bigint = it.manifest_id :: bigint
+			   AND m.stop_number :: integer = it.manifest_stop :: integer
+		LEFT OUTER JOIN stg_lemonhaze.stg_inventory si
+			ON si.inventory_id :: bigint = it.inventory_id :: bigint
+		LEFT OUTER JOIN natebox.stg_nathan_inventory_transfer_holding itb
+			ON itb.inbound_license = it.inbound_license
+			   AND itb.outbound_license = itb.outbound_license
+			   AND itb.inventory_id = it.inventory_id
+			   AND itb.transaction_id = it.transaction_id
+	WHERE
+		NOT it.deleted :: boolean
+	GROUP BY
+		it.source :: bigint
+		, it.transaction_id :: bigint
+		, COALESCE(m.inbound_license_number :: integer, it.inbound_license :: integer)
+		, COALESCE(m.outbound_license_number :: integer, it.outbound_license :: integer)
+		, it.inventory_id :: bigint
+		, it.strain :: text
+		, it.inventory_type_id :: integer
+		, it.is_refund :: boolean
+		, it.revenue :: numeric(28, 10)
+		, it.quantity :: numeric(28, 10);
+COMMIT;
+CREATE INDEX idx_snit_inbound_license
+	ON natebox.stg_nathan_inventory_transfer (inbound_license);
+CREATE INDEX idx_snit_outbound_license
+	ON natebox.stg_nathan_inventory_transfer (outbound_license);
+CREATE INDEX idx_snit_inventory_id
+	ON natebox.stg_nathan_inventory_transfer (inventory_id);
+CREATE INDEX idx_snit_transfer_id
+	ON natebox.stg_nathan_inventory_transfer (transfer_id);
+COMMIT;

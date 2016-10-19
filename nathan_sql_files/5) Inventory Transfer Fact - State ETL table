@@ -1,0 +1,45 @@
+DROP TABLE IF EXISTS natebox.biotrackthc_nathan_inventorytransfers;
+COMMIT;
+CREATE TABLE natebox.biotrackthc_nathan_inventorytransfers
+AS
+	SELECT
+		  'STATE' :: text                                            AS root
+		, 111111111 :: bigint                                        AS source
+		, sit.inventorysessiontime :: timestamp(0) without time zone AS created_date
+		, sit.transactionid :: bigint                                AS transfer_id
+		, sit.inbound_license :: integer                             AS inbound_license
+		, sit.outbound_license :: integer                            AS outbound_license
+		, sit.inventoryid :: bigint                                  AS inventory_id
+		, sit.strain :: text                                         AS strain
+		, sit.inventorytype :: integer                               AS inventory_type_id
+		, sit.usableweight :: numeric(28, 10)                        AS size
+		, sit.is_refund :: boolean                                   AS is_refund
+		, sit.saleprice :: numeric(28, 10)                           AS revenue
+		, sit.weight :: numeric(28, 10)                              AS quantity
+	FROM wa_staging.biotrackthc_inventorytransfers sit
+	WHERE
+		NOT sit.deleted :: boolean
+	GROUP BY
+		sit.inventorysessiontime :: timestamp(0) without time zone
+		, sit.transactionid :: bigint
+		, sit.inbound_license :: integer
+		, sit.outbound_license :: integer
+		, sit.inventoryid :: bigint
+		, sit.strain :: text
+		, sit.inventorytype :: integer
+		, sit.usableweight :: numeric(28, 10)
+		, sit.is_refund :: boolean
+		, sit.saleprice :: numeric(28, 10)
+		, sit.weight :: numeric(28, 10);
+COMMIT;
+CREATE INDEX idx_bni_inbound_license
+	ON natebox.biotrackthc_nathan_inventorytransfers (inbound_license);
+CREATE INDEX idx_bni_outbound_license
+	ON natebox.biotrackthc_nathan_inventorytransfers (outbound_license);
+CREATE INDEX idx_bni_inventory_id
+	ON natebox.biotrackthc_nathan_inventorytransfers (inventory_id);
+CREATE INDEX idx_bni_inventory_type_id
+	ON natebox.biotrackthc_nathan_inventorytransfers (inventory_type_id);
+CREATE INDEX idx_bni_transfer_id
+	ON natebox.biotrackthc_nathan_inventorytransfers (transfer_id);
+COMMIT;

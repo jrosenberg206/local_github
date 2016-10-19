@@ -1,0 +1,79 @@
+DROP TABLE IF EXISTS natebox.etl_nathan_inventory_transfers_agg;
+COMMIT;
+CREATE TABLE natebox.etl_nathan_inventory_transfers_agg
+AS
+	SELECT
+		  'STATE' :: text                                  AS root
+		, s.source :: bigint                               AS source
+		, s.created_date :: timestamp(0) without time zone AS created_date
+		, NULL :: timestamp(0) without time zone           AS transfer_date
+		, s.transfer_id :: bigint                          AS transfer_id
+		, s.inbound_license :: integer                     AS inbound_license
+		, s.outbound_license :: integer                    AS outbound_license
+		, s.inventory_id :: bigint                         AS inventory_id
+		, s.strain :: text                                 AS strain
+		, s.inventory_type_id :: integer                   AS inventory_type_id
+		, s.size :: numeric(28, 10)                        AS size
+		, COALESCE(s.is_refund, 0 :: boolean) :: boolean   AS is_refund
+		, s.revenue :: numeric(28, 10)                     AS revenue
+		, s.quantity :: numeric(28, 10)                    AS quantity
+	FROM natebox.biotrackthc_nathan_inventorytransfers s
+	
+	UNION ALL
+	
+	SELECT
+		  'BioTrackAPI' :: text                                           AS root
+		, COALESCE(lhs.source :: bigint, '333333333' :: bigint) :: bigint AS source
+		, NULL :: timestamp(0) without time zone                          AS created_date
+		, lhs.transfer_date :: timestamp(0) without time zone             AS transfer_date
+		, lhs.transfer_id :: bigint                                       AS transfer_id
+		, lhs.inbound_license :: integer                                  AS inbound_license
+		, lhs.outbound_license :: integer                                 AS outbound_license
+		, lhs.inventory_id :: bigint                                      AS inventory_id
+		, lhs.strain :: text                                              AS strain
+		, lhs.inventory_type_id :: integer                                AS inventory_type_id
+		, lhs.size :: numeric(28, 10)                                     AS size
+		, COALESCE(lhs.is_refund, 0 :: boolean) :: boolean                AS is_refund
+		, lhs.revenue :: numeric(28, 10)                                  AS revenue
+		, lhs.quantity :: numeric(28, 10)                                 AS quantity
+	FROM natebox.stg_nathan_inventory_transfer lhs;
+COMMIT;
+CREATE INDEX idx_snita_inbound_license
+	ON natebox.etl_nathan_inventory_transfers_agg (inbound_license);
+CREATE INDEX idx_snita_outbound_license
+	ON natebox.etl_nathan_inventory_transfers_agg (outbound_license);
+CREATE INDEX idx_snita_inventory_id
+	ON natebox.etl_nathan_inventory_transfers_agg (inventory_id);
+CREATE INDEX idx_snita_inventory_type_id
+	ON natebox.etl_nathan_inventory_transfers_agg (inventory_type_id);
+CREATE INDEX idx_snita_source
+	ON natebox.etl_nathan_inventory_transfers_agg (source);
+CREATE INDEX idx_snita_transfer_id
+	ON natebox.etl_nathan_inventory_transfers_agg (transfer_id);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.etl_nathan_inventory_transfers_base;
+COMMIT;
+CREATE TABLE natebox.etl_nathan_inventory_transfers_base
+AS
+	SELECT
+		  ta.transfer_id :: bigint       AS transfer_id
+		, ta.inbound_license :: integer  AS inbound_license
+		, ta.outbound_license :: integer AS outbound_license
+		, ta.inventory_id :: bigint      AS inventory_id
+		, ta.is_refund :: boolean        AS is_refund
+	FROM natebox.etl_nathan_inventory_transfers_agg ta
+	GROUP BY
+		ta.transfer_id :: bigint
+		, ta.inbound_license :: integer
+		, ta.outbound_license :: integer
+		, ta.inventory_id :: bigint
+		, ta.is_refund :: boolean;
+COMMIT;
+CREATE INDEX idx_snitbs_inbound_license
+	ON natebox.etl_nathan_inventory_transfers_base (inbound_license);
+CREATE INDEX idx_snitbs_outbound_license
+	ON natebox.etl_nathan_inventory_transfers_base (outbound_license);
+CREATE INDEX idx_snitbs_inventory_id
+	ON natebox.etl_nathan_inventory_transfers_base (inventory_id);
+COMMIT;

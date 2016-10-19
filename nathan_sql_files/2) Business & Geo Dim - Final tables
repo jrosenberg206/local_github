@@ -1,0 +1,136 @@
+/*
+CREATE SEQUENCE geo_id_seq
+  INCREMENT 1
+  MINVALUE 1
+  MAXVALUE 9223372036854775807
+  START 630000
+  CACHE 1;
+*/
+
+DROP TABLE IF EXISTS natebox.d_nathan_geography;
+COMMIT;
+CREATE TABLE natebox.d_nathan_geography (
+	  geo_id    bigint NOT NULL PRIMARY KEY DEFAULT nextval('geo_id_seq')
+	, zip       integer
+	, city      text
+	, county    text
+	, region    text
+	, state     text
+	, latitude  numeric(28, 10)
+	, longitude numeric(28, 10)
+);
+COMMIT;
+
+INSERT INTO natebox.d_nathan_geography
+(zip, city, county, region, state, latitude, longitude)
+	
+	SELECT
+		z.zip :: integer
+		, z.city :: text
+		, z.county :: text
+		, z.region :: text
+		, z.state :: text
+		, z.latitude :: numeric(28, 10)
+		, z.longitude :: numeric(28, 10)
+	FROM public.d_nathan_zip_detail z
+	ORDER BY
+		z.zip :: integer
+		, z.city :: text ASC;
+COMMIT;
+CREATE INDEX idx_dng_zip
+	ON natebox.d_nathan_geography (zip);
+COMMIT;
+
+/*
+CREATE SEQUENCE org_id_seq
+  INCREMENT 1
+  MINVALUE 1
+  MAXVALUE 9223372036854775807
+  START 24000
+  CACHE 1;
+*/
+  
+DROP TABLE IF EXISTS natebox.d_nathan_organizations;
+COMMIT;
+CREATE TABLE natebox.d_nathan_organizations (
+	  org_id         bigint  NOT NULL PRIMARY KEY DEFAULT nextval('org_id_seq')
+	, geo_id         bigint
+	, root           text    NOT NULL
+	, source         integer NOT NULL
+	, license_number integer
+	, ubi            bigint
+	, name           text
+	, address1       text
+	, address2       text
+	, role           text
+	, medical        integer
+	, open_date      timestamp(0) without time zone
+	, close_date     timestamp(0) without time zone
+);
+COMMIT;
+
+INSERT INTO natebox.d_nathan_organizations
+(geo_id, root, source, license_number, ubi, name, address1, address2, role, medical, open_date, close_date)
+	
+	SELECT
+		a.geo_id :: bigint
+		, a.root :: text
+		, a.source :: bigint
+		, a.license_number :: integer
+		, a.ubi :: bigint
+		, a.name :: text
+		, a.address1 :: text
+		, a.address2 :: text
+		, a.role :: text
+		, a.medical :: integer
+		, a.open_date :: timestamp(0) without time zone
+		, a.close_date :: timestamp(0) without time zone
+	FROM (
+			 (
+				 SELECT
+					   NULL :: bigint       AS geo_id
+					 , 'STATE' :: text      AS root
+					 , 111111111 :: bigint  AS source
+					 , NULL :: integer      AS license_number
+					 , 111111111 :: bigint  AS ubi
+					 , 'PUBLIC' :: text     AS name
+					 , NULL :: text         AS address1
+					 , NULL :: text         AS address2
+					 , 'CONSUMER' :: text   AS role
+					 , NULL :: integer      AS medical
+					 , NULL :: timestamp(0) AS open_date
+					 , NULL :: timestamp(0) AS close_date)
+		
+			 UNION ALL
+		
+			 (
+				 SELECT
+					   g.geo_id :: bigint           AS geo_id
+					 , l.root :: text               AS root
+					 , l.source :: bigint           AS source
+					 , l.license_number :: integer  AS license_number
+					 , l.ubi :: bigint              AS ubi
+					 , l.name :: text               AS name
+					 , l.address1 :: text           AS address1
+					 , l.address2 :: text           AS address2
+					 , l.role :: text               AS role
+					 , l.medical :: integer         AS medical
+					 , l.open_date :: timestamp(0)  AS open_date
+					 , l.close_date :: timestamp(0) AS close_date
+				 FROM natebox.etl_nathan_businesses l
+					 LEFT JOIN natebox.d_nathan_geography g
+						 ON l.city = g.city
+							AND l.zip = g.zip
+				 ORDER BY
+					 l.license_number :: integer ASC)
+		 ) a;
+COMMIT;
+CREATE INDEX idx_dno_geo_id
+	ON natebox.d_nathan_organizations (geo_id);
+CREATE INDEX idx_dno_license_number
+	ON natebox.d_nathan_organizations (license_number);
+CREATE INDEX idx_dno_ubi
+	ON natebox.d_nathan_organizations (ubi);
+CREATE INDEX idx_dno_source
+	ON natebox.d_nathan_organizations (source);
+COMMIT;

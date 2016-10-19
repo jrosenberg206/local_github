@@ -1,0 +1,50 @@
+DROP TABLE IF EXISTS natebox.stg_nathan_inventory_transfer_holding;
+COMMIT;
+CREATE TABLE natebox.stg_nathan_inventory_transfer_holding
+AS
+	SELECT
+		  i.source :: bigint                                AS source
+		, i.transfer_date :: timestamp(0) without time zone AS transfer_date
+		, i.transaction_id :: bigint                        AS transaction_id
+		, i.inbound_license :: integer                      AS inbound_license
+		, i.outbound_license :: integer                     AS outbound_license
+		, i.manifest_stop :: integer                        AS manifest_stop
+		, i.manifest_id :: bigint                           AS manifest_id
+		, i.inventory_id :: bigint                          AS inventory_id
+		, i.strain :: text                                  AS strain
+		, i.inventory_type_id :: integer                    AS inventory_type_id
+		, i.deleted :: integer                              AS deleted
+		, i.is_refund :: integer                            AS is_refund
+		, (CASE WHEN i.revenue = 'null'
+		THEN NULL
+		   ELSE i.revenue END) :: numeric(28, 10)           AS revenue
+		, i.quantity :: numeric(28, 10)                     AS quantity
+	FROM stg_lemonhaze.stg_inventory_transfer_inbound i
+	UNION ALL
+	
+	SELECT
+		  o.source :: bigint                                AS source
+		, o.transfer_date :: timestamp(0) without time zone AS transfer_date
+		, o.transaction_id :: bigint                        AS transaction_id
+		, o.inbound_license :: integer                      AS inbound_license
+		, o.outbound_license :: integer                     AS outbound_license
+		, o.manifest_stop :: integer                        AS manifest_stop
+		, o.manifest_id :: bigint                           AS manifest_id
+		, o.inventory_id :: bigint                          AS inventory_id
+		, o.strain :: text                                  AS strain
+		, o.inventory_type_id :: integer                    AS inventory_type_id
+		, o.deleted :: integer                              AS deleted
+		, o.is_refund :: integer                            AS is_refund
+		, (CASE WHEN o.revenue = 'null'
+		THEN NULL
+		   ELSE o.revenue END) :: numeric(28, 10)           AS revenue
+		, o.quantity :: numeric(28, 10)                     AS quantity
+	FROM stg_lemonhaze.stg_inventory_transfer o;
+COMMIT;
+CREATE INDEX idx_snitv_in_license
+	ON natebox.stg_nathan_inventory_transfer_holding (inbound_license);
+CREATE INDEX idx_snitv_out_license
+	ON natebox.stg_nathan_inventory_transfer_holding (outbound_license);
+CREATE INDEX idx_snitv_mfid_mfstop
+	ON natebox.stg_nathan_inventory_transfer_holding (manifest_id, manifest_stop);
+COMMIT;

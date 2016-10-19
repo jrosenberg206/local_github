@@ -1,0 +1,517 @@
+DROP TABLE IF EXISTS natebox.etl_sale_base;
+COMMIT;
+CREATE TABLE natebox.etl_sale_base
+AS
+	SELECT
+		  sa.inventory_id :: bigint    AS inventory_id
+		, sa.transaction_id :: bigint  AS transaction_id
+		, sa.license_number :: integer AS license_number
+	FROM (
+			 SELECT
+				   bd.inventoryid :: bigint   AS inventory_id
+				 , bd.transactionid :: bigint AS transaction_id
+				 , bl.licensenum :: integer   AS license_number
+			 FROM wa_staging.biotrackthc_dispensing bd
+				 LEFT JOIN wa_staging.biotrackthc_locations bl
+					 ON bd.location :: integer = bl.id :: integer
+						AND bd.orgid :: integer = bl.orgid :: integer
+			 WHERE
+				 NOT COALESCE(bd.deleted :: integer, 0) :: boolean
+		
+			 UNION ALL
+		
+			 SELECT
+				   ss.inventory_id :: bigint    AS inventory_id
+				 , ss.transaction_id :: bigint  AS transaction_id
+				 , ss.license_number :: integer AS license_number
+			 FROM
+				 stg_lemonhaze.stg_sale ss
+			 WHERE
+				 NOT COALESCE(ss.deleted :: integer, 0) :: boolean
+		 ) sa
+	GROUP BY
+		sa.inventory_id :: bigint
+		, sa.transaction_id :: bigint
+		, sa.license_number :: integer;
+COMMIT;
+CREATE INDEX idx_esb_inventory_id
+	ON natebox.etl_sale_base (inventory_id);
+CREATE INDEX idx_esb_transaction_id
+	ON natebox.etl_sale_base (transaction_id);
+CREATE INDEX idx_esb_license_number
+	ON natebox.etl_sale_base (license_number);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.etl_sale_state;
+COMMIT;
+CREATE TABLE natebox.etl_sale_state
+AS
+	SELECT
+		  'STATE' :: text                                  AS root
+		, 111111111 :: bigint                              AS source
+		, sb.sessiontime :: timestamp(0) without time zone AS sale_date
+		, lb.licensenum :: integer                         AS license_number
+		, NULL :: text                                     AS terminal_id
+		, sb.transactionid :: bigint                       AS transaction_id
+		, sb.inventorytype :: bigint                       AS inventory_type_id
+		, sb.usableweight :: numeric(28, 10)               AS size
+		, sb.inventoryid :: bigint                         AS inventory_id
+		, sb.price :: numeric(28, 10)                      AS revenue
+		, sb.weight :: numeric(28, 10)                     AS quantity
+	FROM wa_staging.biotrackthc_dispensing sb
+		LEFT JOIN wa_staging.biotrackthc_locations lb
+			ON sb.location :: integer = lb.id :: integer
+			   AND sb.orgid :: integer = lb.orgid :: integer
+	WHERE
+		NOT COALESCE(sb.deleted :: integer, 0) :: boolean
+	GROUP BY
+		sb.sessiontime :: timestamp(0) without time zone
+		, lb.licensenum :: integer
+		, sb.transactionid :: bigint
+		, sb.inventorytype :: bigint
+		, sb.usableweight :: numeric(28, 10)
+		, sb.inventoryid :: bigint
+		, sb.price :: numeric(28, 10)
+		, sb.weight :: numeric(28, 10);
+COMMIT;
+CREATE INDEX idx_ess_transaction_id
+	ON natebox.etl_sale_state (transaction_id);
+CREATE INDEX idx_ess_license_number
+	ON natebox.etl_sale_state (license_number);
+CREATE INDEX idx_ess_inventory_id
+	ON natebox.etl_sale_state (inventory_id);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.etl_sale_api;
+COMMIT;
+CREATE TABLE natebox.etl_sale_api
+AS
+	SELECT
+		  'BioTrackAPI' :: text                              AS root
+		, sc.source :: bigint                                AS source
+		, sc.sale_date :: timestamp(0) without time zone     AS sale_date
+		, sc.license_number :: integer                       AS license_number
+		, sc.terminal_id :: text                             AS terminal_id
+		, sc.transaction_id :: bigint                        AS transaction_id
+		, (CASE WHEN sc.inventory_type_id :: text = 'null'
+		THEN NULL
+		   ELSE sc.inventory_type_id :: text END) :: integer AS inventory_type_id
+		, MAX(si.size :: numeric(28, 10))                    AS size
+		, sc.inventory_id :: bigint                          AS inventory_id
+		, sc.revenue :: numeric(28, 10)                      AS revenue
+		, sc.quantity :: numeric(28, 10)                     AS quantity
+	FROM stg_lemonhaze.stg_sale sc
+		LEFT OUTER JOIN stg_lemonhaze.stg_inventory si
+			ON si.inventory_id = sc.inventory_id
+	WHERE
+		NOT COALESCE(sc.deleted :: integer, 0) :: boolean
+	GROUP BY
+		sc.source :: bigint
+		, sc.sale_date :: timestamp(0) without time zone
+		, sc.license_number :: integer
+		, sc.terminal_id :: text
+		, sc.transaction_id :: bigint
+		, CASE WHEN sc.inventory_type_id :: text = 'null'
+		THEN
+			NULL
+		  ELSE sc.inventory_type_id :: text END :: integer
+		, sc.inventory_id :: bigint
+		, sc.revenue :: numeric(28, 10)
+		, sc.quantity :: numeric(28, 10);
+COMMIT;
+CREATE INDEX idx_esa_transaction_id
+	ON natebox.etl_sale_api (transaction_id);
+CREATE INDEX idx_esa_license_number
+	ON natebox.etl_sale_api (license_number);
+CREATE INDEX idx_esa_inventory_id
+	ON natebox.etl_sale_api (inventory_id);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.f_nathan_sale;
+COMMIT;
+CREATE TABLE natebox.f_nathan_sale
+AS
+	SELECT
+		  COALESCE(b.root, c.root) :: text                                         AS root
+		, COALESCE(b.source, c.source) :: bigint                                   AS source
+		, COALESCE(c.sale_date,
+				   b.sale_date) :: timestamp(0) AT TIME ZONE 'US/Pacific'          AS sale_date
+		, COALESCE(o.org_id :: text,
+				   CONCAT('1111111', a.license_number :: text)
+		  ) :: bigint                                                              AS retail_org_id
+		, c.terminal_id :: text                                                    AS terminal_id
+		, a.transaction_id :: bigint                                               AS transaction_id
+		, COALESCE(c.inventory_type_id,
+				   b.inventory_type_id) :: integer                                 AS inventory_type_id
+		, ROUND(ROUND(COALESCE(c.size, b.size) * 20, 0) / 20, 2) :: numeric(28, 2) AS size
+		, a.inventory_id :: bigint                                                 AS inventory_id
+		, ROUND(COALESCE(c.revenue,
+						 b.revenue), 2) :: numeric(28, 2)                          AS revenue
+		, ROUND(COALESCE(c.quantity,
+						 b.quantity), 2) :: numeric(28, 2)                         AS quantity
+	FROM natebox.etl_sale_base a
+		LEFT JOIN natebox.etl_sale_state b
+			ON b.license_number = a.license_number
+			   AND b.transaction_id = a.transaction_id
+			   AND b.inventory_id = a.inventory_id
+		LEFT JOIN natebox.etl_sale_api c
+			ON c.license_number = a.license_number
+			   AND c.transaction_id = a.transaction_id
+			   AND c.inventory_id = a.inventory_id
+		LEFT JOIN natebox.d_nathan_organizations o
+			ON a.license_number = o.license_number
+	GROUP BY
+		COALESCE(b.root, c.root) :: text
+		, COALESCE(b.source, c.source) :: bigint
+		, COALESCE(c.sale_date, b.sale_date) :: timestamp(0) AT TIME ZONE 'US/Pacific'
+		, COALESCE(o.org_id :: text, CONCAT('1111111', a.license_number :: text)) :: bigint
+		, c.terminal_id :: text
+		, a.transaction_id :: bigint
+		, COALESCE(c.inventory_type_id, b.inventory_type_id) :: integer
+		, ROUND(ROUND(COALESCE(c.size, b.size) * 20, 0) / 20, 2) :: numeric(28, 2)
+		, a.inventory_id :: bigint
+		, ROUND(COALESCE(c.revenue, b.revenue), 2) :: numeric(28, 2)
+		, ROUND(COALESCE(c.quantity, b.quantity), 2) :: numeric(28, 2);
+COMMIT;
+CREATE INDEX idx_fns_source
+	ON natebox.f_nathan_sale (source);
+CREATE INDEX idx_fns_transaction_id
+	ON natebox.f_nathan_sale (transaction_id);
+CREATE INDEX idx_fns_retail_org_id
+	ON natebox.f_nathan_sale (retail_org_id);
+CREATE INDEX idx_fns_inventory_id
+	ON natebox.f_nathan_sale (inventory_id);
+COMMIT;
+
+DROP TABLE IF EXISTS natebox.tableau_cumulative_sales;
+COMMIT;
+CREATE TABLE natebox.tableau_cumulative_sales
+AS
+	((
+		 SELECT
+			   CASE s.source
+			   WHEN 73488392
+				   THEN 603351392
+			   ELSE s.source END :: bigint                                             AS source
+			 , it.outbound_org_id :: bigint                                            AS origin_org_id
+			 , s.retail_org_id :: bigint                                               AS seller_org_id
+			 , 111111111 :: bigint                                                     AS buyer_org_id
+			 , MAX(it.transfer_date) :: date                                           AS origin_date
+			 , s.sale_date :: timestamp(0) without time zone                           AS transaction_date
+			 , s.transaction_id :: bigint                                              AS transaction_id
+			 , it.strain :: text                                                       AS strain
+			 , CASE ty.inventory_type_id :: integer
+			   WHEN 22
+				   THEN 'Edibles'
+			   WHEN 23
+				   THEN 'Liquids'
+			   WHEN 24
+				   THEN 'Extracts'
+			   WHEN 25
+				   THEN 'Topicals'
+			   WHEN 28
+				   THEN 'Flower'
+			   WHEN 30
+				   THEN 'Mixes'
+			   WHEN 31
+				   THEN 'Mixed Packages'
+			   WHEN 32
+				   THEN 'Infused Mixes'
+			   ELSE ty.inventory_type END :: text                                      AS inventory_type
+			 , ty.inventory_type_id :: integer                                         AS inventory_type_id
+			 , s.inventory_id :: bigint                                                AS inventory_id
+			 , s.size :: numeric(28, 2)                                                AS size
+			 , s.revenue :: numeric(28, 2)                                             AS revenue
+			 , s.quantity :: numeric(28, 2)                                            AS quantity
+			 , ROUND(SUM(it.revenue) / CASE WHEN SUM(it.quantity) = 0
+			 THEN AVG(1)
+									   ELSE SUM(it.quantity) END, 2) :: numeric(28, 2) AS wholesale_cost_per_unit
+		 FROM natebox.f_nathan_sale s
+			 LEFT OUTER JOIN natebox.f_nathan_inventory_transfers it
+				 ON s.inventory_id = it.inventory_id
+					AND s.retail_org_id = it.inbound_org_id
+					AND s.source = it.source
+			 LEFT OUTER JOIN public.d_nathan_inventory_type ty
+				 ON s.inventory_type_id = ty.inventory_type_id
+		 WHERE s.source <> 600607898
+		 GROUP BY
+			 CASE s.source
+			 WHEN 73488392
+				 THEN 603351392
+			 ELSE s.source END :: bigint
+			 , s.retail_org_id :: bigint
+			 , it.outbound_org_id :: bigint
+			 , s.sale_date :: timestamp(0) without time zone
+			 , s.transaction_id :: bigint
+			 , it.strain :: text
+			 , CASE ty.inventory_type_id :: integer
+			   WHEN 22
+				   THEN 'Edibles'
+			   WHEN 23
+				   THEN 'Liquids'
+			   WHEN 24
+				   THEN 'Extracts'
+			   WHEN 25
+				   THEN 'Topicals'
+			   WHEN 28
+				   THEN 'Flower'
+			   WHEN 30
+				   THEN 'Mixes'
+			   WHEN 31
+				   THEN 'Mixed Packages'
+			   WHEN 32
+				   THEN 'Infused Mixes'
+			   ELSE ty.inventory_type END :: text
+			 , ty.inventory_type_id :: integer
+			 , s.inventory_id :: bigint
+			 , s.size :: numeric(28, 2)
+			 , s.revenue :: numeric(28, 2)
+			 , s.quantity :: numeric(28, 2)
+	 )
+	
+	 UNION ALL
+	
+	 (
+		 SELECT
+			   CASE t.source
+			   WHEN 73488392
+				   THEN 603351392
+			   ELSE t.source END :: bigint                                 AS source
+			 , NULL :: bigint                                              AS origin_org_id
+			 , t.outbound_org_id :: bigint                                 AS seller_org_id
+			 , t.inbound_org_id :: bigint                                  AS buyer_org_id
+			 , '1-1-2014 00:00:01' :: date                                 AS origin_date
+			 , t.transfer_date :: timestamp(0) without time zone           AS transaction_date
+			 , t.transfer_id :: bigint                                     AS transaction_id
+			 , t.strain :: text                                            AS strain
+			 , CASE tp.inventory_type_id :: integer
+			   WHEN 22
+				   THEN 'Edibles'
+			   WHEN 23
+				   THEN 'Liquids'
+			   WHEN 24
+				   THEN 'Extracts'
+			   WHEN 25
+				   THEN 'Topicals'
+			   WHEN 28
+				   THEN 'Flower'
+			   WHEN 30
+				   THEN 'Mixes'
+			   WHEN 31
+				   THEN 'Mixed Packages'
+			   WHEN 32
+				   THEN 'Infused Mixes'
+			   ELSE tp.inventory_type END :: text                          AS inventory_type
+			 , tp.inventory_type_id :: integer                             AS inventory_type_id
+			 , t.inventory_id :: bigint                                    AS inventory_id
+			 , t.size :: numeric(28, 2)                                    AS size
+			 , ROUND(t.revenue, 2) :: numeric(28, 2)                       AS revenue
+			 , ROUND(t.quantity, 2) :: numeric(28, 2)                      AS quantity
+			 , ROUND(t.revenue / CASE WHEN t.quantity = 0
+			 THEN 1
+								 ELSE t.quantity END, 2) :: numeric(28, 2) AS wholesale_cost_per_unit
+		 FROM natebox.f_nathan_inventory_transfers t
+			 LEFT OUTER JOIN public.d_nathan_inventory_type tp
+				 ON t.inventory_type_id = tp.inventory_type_id
+		 WHERE t.source <> 600607898
+		 GROUP BY
+			 CASE t.source
+			 WHEN 73488392
+				 THEN 603351392
+			 ELSE t.source END :: bigint
+			 , t.outbound_org_id :: bigint
+			 , NULL :: bigint
+			 , t.inbound_org_id :: bigint
+			 , t.transfer_date :: timestamp(0) without time zone
+			 , t.transfer_id :: bigint
+			 , t.strain :: text
+			 , CASE tp.inventory_type_id :: integer
+			   WHEN 22
+				   THEN 'Edibles'
+			   WHEN 23
+				   THEN 'Liquids'
+			   WHEN 24
+				   THEN 'Extracts'
+			   WHEN 25
+				   THEN 'Topicals'
+			   WHEN 28
+				   THEN 'Flower'
+			   WHEN 30
+				   THEN 'Mixes'
+			   WHEN 31
+				   THEN 'Mixed Packages'
+			   WHEN 32
+				   THEN 'Infused Mixes'
+			   ELSE tp.inventory_type END :: text
+			 , tp.inventory_type_id :: integer
+			 , t.inventory_id :: bigint
+			 , t.size :: numeric(28, 2)
+			 , t.revenue :: numeric(28, 2)
+			 , t.quantity :: numeric(28, 2)
+			 , ROUND(t.revenue / CASE WHEN t.quantity = 0
+			 THEN 1
+								 ELSE t.quantity END, 2) :: numeric(28, 2)));
+COMMIT;
+CREATE INDEX idx_tcs_source
+	ON natebox.tableau_cumulative_sales (source);
+CREATE INDEX idx_tcs_seller_org_id
+	ON natebox.tableau_cumulative_sales (seller_org_id);
+CREATE INDEX idx_tcs_buyer_org_id
+	ON natebox.tableau_cumulative_sales (buyer_org_id);
+CREATE INDEX idx_tcs_origin_org_id
+	ON natebox.tableau_cumulative_sales (origin_org_id);
+CREATE INDEX idx_tcs_transaction_id
+	ON natebox.tableau_cumulative_sales (transaction_id);
+CREATE INDEX idx_tcs_inventory_id
+	ON natebox.tableau_cumulative_sales (inventory_id);
+COMMIT;
+
+
+DROP TABLE IF EXISTS natebox.tableau_sales;
+COMMIT;
+CREATE TABLE natebox.tableau_sales
+AS
+	SELECT
+		  src.name :: text                                       AS source
+		, origin.name :: text                                    AS origin
+		, sell.name :: text                                      AS seller
+		, buy.name :: text                                       AS buyer
+		, tcs.transaction_date :: timestamp(0) without time zone AS transaction_date
+		, tcs.origin_date :: date                                AS origin_date
+		, tcs.transaction_id :: bigint                           AS transaction_id
+		, tcs.strain :: text                                     AS strain
+		, tcs.inventory_type :: text                             AS inventory_type
+		, CASE tcs.inventory_type_id
+		  WHEN 28
+			  THEN CASE WHEN tcs.size > .8 AND tcs.size <= 1.5
+				  THEN '1'
+				   WHEN tcs.size > 1.5 AND tcs.size <= 2.75
+					   THEN '2'
+				   WHEN tcs.size > 2.75 AND tcs.size <= 5.25
+					   THEN '3.5'
+				   WHEN tcs.size > 5.25 AND tcs.size <= 10.5
+					   THEN '7'
+				   WHEN tcs.size > 10.5 AND tcs.size <= 21
+					   THEN '14'
+				   WHEN tcs.size > 21
+					   THEN '28+'
+				   WHEN tcs.size > .625 AND tcs.size <= .8
+					   THEN '0.75'
+				   WHEN tcs.size <= .625
+					   THEN '0.5'
+				   ELSE tcs.size :: text END
+		  END :: text                                            AS flower_size
+		, tcs.size :: numeric(28, 2)                             AS size
+		, tcs.inventory_id :: bigint                             AS inventory_id
+		, tcs.wholesale_cost_per_unit :: numeric(28, 2)          AS wholesale_cost_per
+		, tcs.revenue :: numeric(28, 2)                          AS revenue
+		, tcs.quantity :: numeric(28, 2)                         AS quantity
+		, tcs.source :: bigint                                   AS source_ubi
+		, sell.license_number :: integer                         AS seller_license_number
+		, sell.role :: text                                      AS seller_role
+		, sell_geo.city :: text                                  AS seller_city
+		, sell_geo.county :: text                                AS seller_county
+		, sell_geo.region :: text                                AS seller_region
+		, buy.license_number :: integer                          AS buyer_license_number
+		, buy.role :: text                                       AS buyer_role
+		, buy_geo.city :: text                                   AS buyer_city
+		, buy_geo.county :: text                                 AS buyer_county
+		, origin.license_number :: integer                       AS origin_license_number
+		, origin.role :: text                                    AS origin_role
+		, origin_geo.city :: text                                AS origin_city
+		, origin_geo.county :: text                              AS origin_county
+	FROM natebox.tableau_cumulative_sales tcs
+		LEFT OUTER JOIN natebox.d_nathan_organizations src
+			ON src.ubi :: bigint = tcs.source :: bigint
+			   AND (src.org_id :: bigint IN (tcs.buyer_org_id :: bigint, tcs.seller_org_id :: bigint)
+					OR src.ubi :: bigint = 111111111)
+		LEFT OUTER JOIN natebox.d_nathan_organizations sell
+			ON sell.org_id :: bigint = tcs.seller_org_id :: bigint
+		LEFT OUTER JOIN natebox.d_nathan_geography sell_geo
+			ON sell_geo.geo_id = sell.geo_id
+		LEFT OUTER JOIN natebox.d_nathan_organizations origin
+			ON origin.org_id :: bigint = tcs.origin_org_id :: bigint
+		LEFT OUTER JOIN natebox.d_nathan_geography origin_geo
+			ON origin_geo.geo_id = origin.geo_id
+		LEFT OUTER JOIN natebox.d_nathan_organizations buy
+			ON buy.org_id :: bigint = tcs.buyer_org_id :: bigint
+			   OR (buy.ubi :: bigint = tcs.buyer_org_id :: bigint
+				   AND buy.ubi :: bigint = 111111111)
+		LEFT OUTER JOIN natebox.d_nathan_geography buy_geo
+			ON buy_geo.geo_id = buy.geo_id
+GROUP BY
+		  src.name :: text
+		, origin.name :: text
+		, sell.name :: text
+		, buy.name :: text
+		, tcs.transaction_date :: timestamp(0) without time zone
+		, tcs.origin_date :: date
+		, tcs.transaction_id :: bigint
+		, tcs.strain :: text
+		, tcs.inventory_type :: text
+		, CASE tcs.inventory_type_id
+		  WHEN 28
+			  THEN CASE WHEN tcs.size > .8 AND tcs.size <= 1.5
+				  THEN '1'
+				   WHEN tcs.size > 1.5 AND tcs.size <= 2.75
+					   THEN '2'
+				   WHEN tcs.size > 2.75 AND tcs.size <= 5.25
+					   THEN '3.5'
+				   WHEN tcs.size > 5.25 AND tcs.size <= 10.5
+					   THEN '7'
+				   WHEN tcs.size > 10.5 AND tcs.size <= 21
+					   THEN '14'
+				   WHEN tcs.size > 21
+					   THEN '28+'
+				   WHEN tcs.size > .625 AND tcs.size <= .8
+					   THEN '0.75'
+				   WHEN tcs.size <= .625
+					   THEN '0.5'
+				   ELSE tcs.size :: text END
+		  END :: text
+		, tcs.size :: numeric(28, 2)
+		, tcs.inventory_id :: bigint
+		, tcs.wholesale_cost_per_unit :: numeric(28, 2)
+		, tcs.revenue :: numeric(28, 2)
+		, tcs.quantity :: numeric(28, 2)
+		, tcs.source :: bigint
+		, sell.license_number :: integer
+		, sell.role :: text
+		, sell_geo.city :: text
+		, sell_geo.county :: text
+		, sell_geo.region :: text
+		, buy.license_number :: integer
+		, buy.role :: text
+		, buy_geo.city :: text
+		, buy_geo.county :: text
+		, origin.license_number :: integer
+		, origin.role :: text
+		, origin_geo.city :: text
+		, origin_geo.county :: text
+;
+COMMIT;
+CREATE INDEX idx_ts_source_ubi
+	ON natebox.tableau_sales (source_ubi);
+CREATE INDEX idx_ts_source
+	ON natebox.tableau_sales (source);
+CREATE INDEX idx_ts_origin
+	ON natebox.tableau_sales (origin);
+CREATE INDEX idx_ts_seller
+	ON natebox.tableau_sales (seller);
+CREATE INDEX idx_ts_buyer
+	ON natebox.tableau_sales (buyer);
+CREATE INDEX idx_ts_transaction_id
+	ON natebox.tableau_sales (transaction_id);
+CREATE INDEX idx_ts_inventory_id
+	ON natebox.tableau_sales (inventory_id);
+CREATE INDEX idx_ts_inventory_type
+	ON natebox.tableau_sales (inventory_type);
+CREATE INDEX idx_ts_flower_size
+	ON natebox.tableau_sales (flower_size);
+CREATE INDEX idx_ts_seller_license_number
+	ON natebox.tableau_sales (seller_license_number);
+CREATE INDEX idx_ts_buyer_license_number
+	ON natebox.tableau_sales (buyer_license_number);
+CREATE INDEX idx_ts_origin_license_number
+	ON natebox.tableau_sales (origin_license_number);
+COMMIT;

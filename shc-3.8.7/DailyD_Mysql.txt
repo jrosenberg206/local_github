@@ -1,0 +1,171 @@
+use botanica;
+drop table if exists botanica.employee;
+create table botanica.employee 
+select * from ubi603350313.employee;
+drop table if exists botanica.inventory;
+create table botanica.inventory
+select * from ubi603350313.inventory;
+drop table if exists botanica.inventory_adjust;
+create table botanica.inventory_adjust
+select * from ubi603350313.inventory_adjust;
+drop table if exists botanica.inventory_qa_sample;
+create table botanica.inventory_qa_sample
+select * from ubi603350313.inventory_qa_sample;
+drop table if exists botanica.inventory_room;
+create table botanica.inventory_room
+select * from ubi603350313.inventory_room;
+select count(*) from inventory_room;
+drop table if exists botanica.inventory_transfer;
+create table botanica.inventory_transfer
+select * from ubi603350313.inventory_transfer;
+drop table if exists botanica.manifest;
+create table botanica.manifest
+select * from ubi603350313.manifest;
+drop table if exists botanica.manifest_stop_data;
+create table botanica.manifest_stop_data
+select * from ubi603350313.manifest_stop_data;
+drop table if exists botanica.manifest_stop_items;
+create table botanica.manifest_stop_items
+select * from ubi603350313.manifest_stop_items;
+drop table if exists botanica.qa_lab;
+create table botanica.qa_lab 
+select * from ubi603350313.qa_lab; 
+drop table if exists botanica.tax_report;
+create table botanica.tax_report 
+select * from ubi603350313.tax_report; 
+drop table if exists botanica.vehicle;
+create table botanica.vehicle 
+select * from ubi603350313.vehicle; 
+drop table if exists botanica.nathan_dim_vendors; 
+create table botanica.nathan_dim_vendors 
+select license_number, address1, address2, city, name, state, zipcode, county, region, role from 
+( 
+ select 
+v.location as license_number
+, CASE WHEN v.name = 'E  B GROWERS' THEN 'E & B GROWERS'
+       WHEN v.name = 'WCCG, INC.' THEN 'HAPPY VALLEY FARMS'
+       ELSE v.name END as name
+, v.address1 
+, v.address2
+, v.city
+, v.state
+, CASE WHEN v.location = 415927 THEN 98801
+       WHEN v.location = 412439 THEN 99202
+       WHEN v.location = 412858 THEN 99004
+       ELSE left(v.zip,5) end as zipcode
+, z.county as county
+, z.region as region
+, case when v.retail = 1 then 'RETAILER'
+       when v.processor = 1 and v.producer = 1 then 'GROWER/PROCESSOR'
+       when v.processor = 0 and v.producer = 1 then 'GROWER'
+       when v.processor = 1 and v.producer = 0 then 'PROCESSOR'
+       else 'CHECK' end as role
+from ubi603350313.vendor v
+  left join avitas.nathan_zip_detail z
+    on z.zip = CASE WHEN v.location = 415927 THEN 98801
+               WHEN v.location = 412439 THEN 99202
+               WHEN v.location = 412858 THEN 99004
+               ELSE left(v.zip,5) end
+group by
+v.location 
+, CASE WHEN v.name = 'E  B GROWERS' THEN 'E & B GROWERS'
+       WHEN v.name = 'WCCG, INC.' THEN 'HAPPY VALLEY FARMS'
+       ELSE v.name END
+, v.address1 
+, v.address2
+, v.city
+, v.state
+, CASE WHEN v.location = 415927 THEN 98801
+       WHEN v.location = 412439 THEN 99202
+       WHEN v.location = 412858 THEN 99004
+       ELSE left(v.zip,5) END
+, z.county 
+, z.region 
+, case when v.retail = 1 then 'RETAILER'
+       when v.processor = 1 and v.producer = 1 then 'GROWER/PROCESSOR'
+       when v.processor = 0 and v.producer = 1 then 'GROWER'
+       when v.processor = 1 and v.producer = 0 then 'PROCESSOR'
+       else 'CHECK' end
+) x;
+
+drop table if exists botanica.nathan_b2b; 
+create table botanica.nathan_b2b
+select transfer_date, transactionid, outbound_license, inbound_license, is_sample, deleted, is_refund, inventoryid, inventory_type_id, inventory_type, strain, description, revenue_per_unit, usable_weight, quantity, revenue from
+(select t.sessiontime AS transfer_date, t.transactionid, t.outbound_license, 
+case when m.license_number is not null and v2.name <> 'BOTANICA SEATTLE' then m.license_number when isnull(m.license_number) and v.name <> 'BOTANICA SEATTLE' then t.inbound_licence else NULL end AS inbound_license,
+case when (t.price/t.quantity) <= 1 and t.is_refund = 0 then 'TRUE' 
+      else 'FALSE' end AS is_sample,
+case when t.deleted = 1 then 'TRUE' 
+      when t.deleted = 0 then 'FALSE' end AS deleted,
+case when t.is_refund = 1 then 'TRUE'
+      when t.is_refund = 0 then 'FALSE' end AS is_refund,
+t.inventoryid AS inventoryid,
+t.inventorytype AS inventory_type_id,
+it.inventory_type AS inventory_type,
+t.strain AS strain,
+i.productname AS description,
+t.price/t.quantity AS revenue_per_unit,
+i.usable_weight AS usable_weight,
+t.quantity AS quantity,
+t.price AS revenue 
+from ubi603350313.inventory_transfer t 
+  left join ubi603350313.manifest_stop_data m 
+    on t.manifestid = m.manifestid 
+    and t.manifest_stop = m.stopnumber 
+  left join ubi603350313.vendor v 
+    on v.location = t.outbound_license 
+  left join ubi603350313.vendor v2 
+    on v2.location = m.license_number 
+  left join state.dim_inventory_type it 
+    on it.inventory_type_id = t.inventorytype 
+  left join ubi603350313.inventory i 
+    on i.id = t.inventoryid) x;
+
+drop table if exists botanica.nathan_b2b_raw;
+create table botanica.nathan_b2b_raw
+select transfer_id, transfer_date, transactionid, outbound_license, inbound_license, is_sample, deleted, is_refund, inventoryid, inventory_type_id, inventory_type, strain, description, revenue_per_unit, usable_weight, quantity, revenue from
+(select 
+@id:= @id +1 as transfer_id
+,b.*
+from
+(select
+*
+from 
+botanica.nathan_b2b a
+where
+NOT isnull(a.inbound_license)
+order by
+a.transfer_date asc
+, a.transactionid asc
+, a.inventoryid asc )b
+,(select @id := 4422000) c)x;
+
+drop table if exists botanica.nathan_b2b_botanica;
+create table botanica.nathan_b2b_botanica
+select transfer_id, transfer_date, transaction_id, outbound_license, inbound_license, is_sample, deleted, is_refund, was_refunded, inventoryid, inventory_type_id, inventory_type, strain, description,
+revenue_per_unit, usable_weight, quantity, revenue from 
+(Select
+a.transfer_id, a.transfer_date, a.transactionid as transaction_id, a.outbound_license, a.inbound_license, a.is_sample, a.deleted, a.is_refund
+, CASE WHEN b.is_refund = 'TRUE' THEN 'TRUE' ELSE 'FALSE' END as was_refunded
+, a.inventoryid, a.inventory_type_id, a.inventory_type, a.strain, a.description
+, round(CASE WHEN a.is_refund = 'TRUE' THEN c.revenue_per_unit ELSE a.revenue_per_unit END,2) as revenue_per_unit
+, Round(round(a.usable_weight*2,0)/2,2) as usable_weight
+, round(CASE WHEN a.is_refund = 'TRUE' THEN -1*a.quantity ELSE a.quantity END,2) as quantity
+, ROUND(CASE WHEN a.is_refund = 'TRUE' THEN -1*a.quantity*c.revenue_per_unit 
+             WHEN v.name = 
+             'BOTANICA SEATTLE'
+             THEN -1*a.revenue ELSE a.revenue END,2) as revenue
+from 
+botanica.nathan_b2b_raw a
+  left join (select * from botanica.nathan_b2b_raw where is_refund = 'TRUE' and deleted = 'FALSE') b
+    on b.inventoryid = a.inventoryid
+    and b.outbound_license = a.inbound_license
+    and b.transfer_date >= a.transfer_date
+    and a.is_refund = 'FALSE'
+  left join (select * from botanica.nathan_b2b_raw where is_refund = 'FALSE' and deleted = 'FALSE') c
+    on c.inventoryid = a.inventoryid
+    and a.outbound_license = c.inbound_license
+    and a.transfer_date >= c.transfer_date
+    and a.is_refund = 'TRUE'
+  left join ubi603350313.vendor v
+    on a.inbound_license = v.location) x;
